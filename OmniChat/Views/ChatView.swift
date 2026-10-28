@@ -29,52 +29,7 @@ struct ChatView: View {
     var body: some View {
         let messages = conversation.sortedMessages
         let stream = engine.streamState(for: conversation)
-        let generating = stream != nil
-
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    if messages.isEmpty {
-                        emptyHint
-                    }
-                    ForEach(messages) { message in
-                        MessageRow(
-                            message: message,
-                            stream: stream?.messageID == message.id ? stream : nil,
-                            isLast: message.id == messages.last?.id,
-                            canAct: !generating,
-                            onRegenerate: { engine.regenerate(in: conversation, context: context) },
-                            onEdit: {
-                                editText = message.content
-                                editingMessage = message
-                            },
-                            onDelete: {
-                                engine.delete(message, from: conversation, context: context)
-                                try? context.save()
-                            }
-                        )
-                        .id(message.id)
-                    }
-                    Color.clear
-                        .frame(height: 1)
-                        .id("bottom")
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .frame(maxWidth: 860)
-                .frame(maxWidth: .infinity)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .onAppear {
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-            .onChange(of: messages.count) {
-                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
-            }
-            .onChange(of: (stream?.text.count ?? 0) + (stream?.reasoning.count ?? 0) / 200) {
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-        }
+        messageList(messages: messages, stream: stream)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ComposerView(conversation: conversation, isAnthropic: isAnthropic)
                 .frame(maxWidth: 900)
@@ -83,45 +38,7 @@ struct ChatView: View {
         }
         .navigationTitle(conversation.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                modelMenu
-            }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Menu {
-                    ShareLink(item: ConversationExporter.markdown(conversation), subject: Text(conversation.displayTitle)) {
-                        Label("分享为文本", systemImage: "square.and.arrow.up")
-                    }
-                    Button {
-                        exportDocument = MarkdownFile(text: ConversationExporter.markdown(conversation))
-                        showExporter = true
-                    } label: {
-                        Label("导出 Markdown 文件", systemImage: "doc.richtext")
-                    }
-                    Button {
-                        exportDocument = MarkdownFile(text: ConversationExporter.json(conversation))
-                        showExporter = true
-                    } label: {
-                        Label("导出 JSON 文件", systemImage: "curlybraces")
-                    }
-                } label: {
-                    Label("导出", systemImage: "square.and.arrow.up")
-                }
-                Button {
-                    showOptions = true
-                } label: {
-                    Label("对话设置", systemImage: "slider.horizontal.3")
-                }
-                .keyboardShortcut("k", modifiers: .command)
-                Button {
-                    engine.regenerate(in: conversation, context: context)
-                } label: {
-                    Label("重新生成", systemImage: "arrow.clockwise")
-                }
-                .keyboardShortcut("r", modifiers: .command)
-                .disabled(generating || messages.isEmpty)
-            }
-        }
+        .toolbar { toolbarContent(generating: stream != nil, isEmpty: messages.isEmpty) }
         .sheet(isPresented: $showOptions) {
             ChatOptionsView(conversation: conversation)
         }
@@ -139,6 +56,104 @@ struct ChatView: View {
             contentType: .plainText,
             defaultFilename: exportFilename
         ) { _ in }
+    }
+
+    @ToolbarContentBuilder
+    private func toolbarContent(generating: Bool, isEmpty: Bool) -> some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            modelMenu
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Menu {
+                ShareLink(item: ConversationExporter.markdown(conversation), subject: Text(conversation.displayTitle)) {
+                    Label("分享为文本", systemImage: "square.and.arrow.up")
+                }
+                Button {
+                    exportDocument = MarkdownFile(text: ConversationExporter.markdown(conversation))
+                    showExporter = true
+                } label: {
+                    Label("导出 Markdown 文件", systemImage: "doc.richtext")
+                }
+                Button {
+                    exportDocument = MarkdownFile(text: ConversationExporter.json(conversation))
+                    showExporter = true
+                } label: {
+                    Label("导出 JSON 文件", systemImage: "curlybraces")
+                }
+            } label: {
+                Label("导出", systemImage: "square.and.arrow.up")
+            }
+            Button {
+                showOptions = true
+            } label: {
+                Label("对话设置", systemImage: "slider.horizontal.3")
+            }
+            .keyboardShortcut("k", modifiers: .command)
+            Button {
+                engine.regenerate(in: conversation, context: context)
+            } label: {
+                Label("重新生成", systemImage: "arrow.clockwise")
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(generating || isEmpty)
+        }
+    }
+
+    private func messageList(messages: [ChatMessage], stream: StreamState?) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    if messages.isEmpty {
+                        emptyHint
+                    }
+                    ForEach(messages) { message in
+                        row(for: message, messages: messages, stream: stream)
+                            .id(message.id)
+                    }
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .frame(maxWidth: 860)
+                .frame(maxWidth: .infinity)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .onAppear {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            .onChange(of: messages.count) {
+                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            .onChange(of: scrollKey(stream)) {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    private func scrollKey(_ stream: StreamState?) -> Int {
+        guard let s = stream else { return 0 }
+        return s.text.count + s.reasoning.count / 200 + s.toolLog.count
+    }
+
+    private func row(for message: ChatMessage, messages: [ChatMessage], stream: StreamState?) -> MessageRow {
+        let isStreamingRow = stream?.messageID == message.id
+        return MessageRow(
+            message: message,
+            stream: isStreamingRow ? stream : nil,
+            isLast: message.id == messages.last?.id,
+            canAct: stream == nil,
+            onRegenerate: { engine.regenerate(in: conversation, context: context) },
+            onEdit: {
+                editText = message.content
+                editingMessage = message
+            },
+            onDelete: {
+                engine.delete(message, from: conversation, context: context)
+                try? context.save()
+            }
+        )
     }
 
     private var exportFilename: String {

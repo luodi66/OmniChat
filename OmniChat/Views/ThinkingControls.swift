@@ -53,7 +53,7 @@ struct ThinkingMenu: View {
                 }
             }
         } label: {
-            Image(systemName: conversation.thinkingLevel > 0 ? "brain.head.profile.fill" : "brain.head.profile")
+            Image(systemName: "brain.head.profile")
                 .font(.title3)
                 .foregroundStyle(conversation.thinkingLevel > 0 ? Color.accentColor : Color.secondary)
                 .frame(width: 32, height: 32)

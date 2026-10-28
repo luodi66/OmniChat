@@ -34,7 +34,6 @@ jobs:
 
       - name: Build (no code signing)
         run: |
-          set -o pipefail
           xcodebuild \
             -project "$APP_NAME.xcodeproj" \
             -scheme "$SCHEME" \
@@ -45,8 +44,12 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build | tee xcodebuild.log | grep -E "error:|warning: .*deprecated|\*\* BUILD" || true
-          test -d "build/Build/Products/Release-iphoneos/$APP_NAME.app" || { tail -n 200 xcodebuild.log; exit 1; }
+            build > xcodebuild.log 2>&1 || {
+              echo "::group::Compiler errors"; grep -E "error:" xcodebuild.log | sort -u; echo "::endgroup::"
+              tail -n 150 xcodebuild.log; exit 1; }
+          grep -E "warning:" xcodebuild.log | sort -u | head -100 || true
+          grep -q "BUILD SUCCEEDED" xcodebuild.log
+          test -f "build/Build/Products/Release-iphoneos/$APP_NAME.app/$APP_NAME"
 
       - name: Package unsigned IPA
         run: |
@@ -54,6 +57,8 @@ jobs:
           cp -R "build/Build/Products/Release-iphoneos/$APP_NAME.app" Payload/
           zip -qry "$APP_NAME-unsigned.ipa" Payload
           ls -lh "$APP_NAME-unsigned.ipa"
+          SIZE=$(stat -f%z "$APP_NAME-unsigned.ipa")
+          [ "$SIZE" -gt 100000 ] || { echo "IPA too small ($SIZE bytes)"; exit 1; }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -161,7 +166,6 @@ jobs:
       - name: Archive
         if: steps.check.outputs.enabled == 'true'
         run: |
-          set -o pipefail
           xcodebuild \
             -project "$APP_NAME.xcodeproj" \
             -scheme "$SCHEME" \
@@ -174,8 +178,8 @@ jobs:
             CODE_SIGN_IDENTITY="${{ steps.signing.outputs.identity }}" \
             PROVISIONING_PROFILE_SPECIFIER="${{ steps.signing.outputs.profile_uuid }}" \
             OTHER_CODE_SIGN_FLAGS="--keychain ${{ steps.signing.outputs.keychain }}" \
-            archive | tee archive.log | grep -E "error:|\*\* ARCHIVE" || true
-          test -d "$RUNNER_TEMP/$APP_NAME.xcarchive" || { tail -n 200 archive.log; exit 1; }
+            archive > archive.log 2>&1 || { grep -E "error:" archive.log | sort -u; tail -n 150 archive.log; exit 1; }
+          grep -q "ARCHIVE SUCCEEDED" archive.log
 
       - name: Export IPA
         if: steps.check.outputs.enabled == 'true'
