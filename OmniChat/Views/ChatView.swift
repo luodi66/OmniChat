@@ -22,16 +22,12 @@ struct ChatView: View {
         providers.first(where: { $0.id == conversation.providerID })
     }
 
-    private var isAnthropic: Bool {
-        provider?.apiProtocol.isAnthropic ?? false
-    }
-
     var body: some View {
         let messages = conversation.sortedMessages
         let stream = engine.streamState(for: conversation)
         messageList(messages: messages, stream: stream)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ComposerView(conversation: conversation, isAnthropic: isAnthropic)
+            ComposerView(conversation: conversation, provider: provider)
                 .frame(maxWidth: 900)
                 .frame(maxWidth: .infinity)
                 .background(.bar)
@@ -226,14 +222,10 @@ struct ChatView: View {
     }
 
     private func select(provider p: ProviderConfig, model: String) {
-        let wasAnthropic = isAnthropic
         conversation.providerID = p.id
         conversation.model = model
         lastProviderID = p.id.uuidString
         lastModel = model
-        if p.apiProtocol.isAnthropic != wasAnthropic, conversation.thinkingLevel > 0 {
-            ThinkingMapping.apply(level: conversation.thinkingLevel, to: conversation, isAnthropic: p.apiProtocol.isAnthropic)
-        }
         try? context.save()
     }
 }

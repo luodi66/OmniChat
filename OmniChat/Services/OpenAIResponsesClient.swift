@@ -53,7 +53,7 @@ struct OpenAIResponsesClient: LLMClient {
             "max_output_tokens": settings.maxTokens
         ]
         if !settings.systemPrompt.isEmpty { body["instructions"] = settings.systemPrompt }
-        if let effort = settings.effortString {
+        if let effort = settings.effort {
             body["reasoning"] = ["effort": effort, "summary": "auto"]
         } else if let t = settings.temperature {
             body["temperature"] = t

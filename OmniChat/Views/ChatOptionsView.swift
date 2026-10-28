@@ -56,7 +56,12 @@ struct ChatOptionsView: View {
                         .frame(minHeight: 100)
                 }
 
-                ThinkingSection(conversation: conversation, isAnthropic: provider?.apiProtocol.isAnthropic ?? false)
+                Section {
+                    ThinkingPanel(conversation: conversation, provider: provider, showsHeader: false)
+                        .padding(.vertical, 6)
+                } header: {
+                    Text("思考程度")
+                }
 
                 Section {
                     Toggle("自定义温度", isOn: $conversation.useTemperature)

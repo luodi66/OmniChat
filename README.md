@@ -15,7 +15,7 @@
 | 对话 | 流式输出、Markdown 与代码块渲染(一键复制)、停止生成、重新生成、编辑历史消息并重发、删除消息、多会话(SwiftData 本地存储)、会话搜索与重命名 |
 | 随时切换模型 | 对话顶部标题处的菜单可在任意服务商 / 模型间切换 |
 | 参数 | 系统提示词、温度(可选是否发送)、最大输出 Tokens |
-| 思考程度 | 统一的思考档位控件:OpenAI → `reasoning_effort`(low / medium / high),Responses → `reasoning.effort`;Anthropic → `thinking.budget_tokens` 滑块(0 为关闭,最大 64000)。模型返回的思考内容(Anthropic `thinking_delta`、兼容接口的 `reasoning_content` / `reasoning`、`<think>` 标签、Responses 的推理摘要)以可折叠区块显示 |
+| 思考程度 | 七档思考:关闭 / 极简 / 低 / 中 / 高 / 超高(xhigh)/ 最大(max),Anthropic 另有「自定义预算」。输入框上方的「🧠 思考」胶囊按钮显示当前档位与冷→暖色强度条,点开为分段滑块(带触感反馈、渐变色、每档中英文说明);档位按协议与模型自动适配,可在服务商模型设置中按模型覆盖;按会话保存,设置里可设全局默认;iPad 快捷键 ⌘⇧T。模型返回的思考内容(Anthropic `thinking_delta`、兼容接口的 `reasoning_content` / `reasoning`、`<think>` 标签、Responses 的推理摘要)以可折叠区块显示 |
 | 图片输入 | 相册多选或文件选择,自动压缩到 1568px 以内 |
 | 文件上传 | 文本 / 代码 / Markdown / CSV / JSON / PDF(PDFKit 抽取文字),内容会作为附件拼入消息 |
 | 联网搜索 | 对话中一键开关。开启后向模型提供 `web_search` 工具(函数调用),App 执行搜索并把结果回传给模型,可多轮调用;后端支持 Tavily(需 Key)和 DuckDuckGo(免 Key) |
@@ -123,8 +123,22 @@ open OmniChat.xcodeproj
 
 ## 思考程度说明
 
-- **OpenAI 协议**:选择 关闭 / 低 / 中 / 高,对应 `reasoning_effort: low | medium | high`(Responses 接口为 `reasoning: {effort, summary: "auto"}`)。关闭时不发送该参数;开启时使用 `max_completion_tokens` 并不发送温度。只有推理模型(如 o 系列、GPT-5 等)支持。
-- **Anthropic 协议**:滑块调节 `thinking.budget_tokens`(1024–64000,0 为关闭),快捷菜单提供 2048 / 8192 / 24576 三档。开启时自动忽略温度,并确保 `max_tokens` 大于预算。多轮工具调用时会原样回传 thinking 块及其签名。
+| 档位 | OpenAI(`reasoning_effort` / Responses `reasoning.effort`) | Anthropic(`thinking.budget_tokens`) |
+|---|---|---|
+| 关闭 | 不发送 | 不发送 `thinking` |
+| 极简 minimal | `minimal` | 1024 |
+| 低 low | `low` | 4096 |
+| 中 medium | `medium` | 10000 |
+| 高 high | `high` | 24000 |
+| 超高 xhigh | `xhigh` | 48000 |
+| 最大 max | `xhigh`(接口报不支持时自动降为 `high` 重试一次,并在回复下方提示) | 64000 |
+| 自定义 | — | 1024–128000 滑块 |
+
+- **自动适配模型**:控件只显示当前模型支持的档位。自动规则:`gpt-5*` 支持 极简~最大;`o1/o3/o4` 等推理模型支持 低/中/高/最大;`gpt-4*`、`gpt-3.5*` 等非推理模型只有「关闭」;Anthropic 支持全部档位(`claude-3-*` 旧模型除外,`claude-3-7` 支持)。如果会话里选的档位当前模型不支持,会自动使用最接近的较低档位并提示。
+- **按模型覆盖**:「设置 → 服务商 → 编辑 → 模型列表 → 点某个模型」可手动勾选该模型支持的档位,或恢复自动。
+- **默认值**:「设置 → 默认思考程度」决定新会话的初始档位;每个会话单独保存自己的档位。
+- OpenAI 开启思考时使用 `max_completion_tokens` 并不发送温度;Responses 接口同时请求 `summary: "auto"`。
+- Anthropic 开启思考时自动去掉温度,并确保 `max_tokens` 大于预算;若预算超过模型输出上限,会根据错误信息自动调小并重试。多轮工具调用时会原样回传 thinking 块及其签名。
 - 返回的思考内容显示在回复上方的「思考过程」折叠区块中。
 
 ## 联网搜索说明

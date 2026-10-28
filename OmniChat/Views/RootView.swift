@@ -11,6 +11,8 @@ struct RootView: View {
     @AppStorage("lastProviderID") private var lastProviderID: String = ""
     @AppStorage("lastModel") private var lastModel: String = ""
     @AppStorage("defaultSystemPrompt") private var defaultSystemPrompt: String = ""
+    @AppStorage("defaultThinking") private var defaultThinking: String = ThinkingLevel.off.rawValue
+    @AppStorage("defaultThinkingBudget") private var defaultThinkingBudget: Int = 16000
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -42,6 +44,8 @@ struct RootView: View {
             }
         }
         conv.systemPrompt = defaultSystemPrompt
+        conv.thinking = ThinkingLevel(rawValue: defaultThinking) ?? .off
+        conv.thinkingBudget = defaultThinkingBudget
         context.insert(conv)
         try? context.save()
         selectedID = conv.id

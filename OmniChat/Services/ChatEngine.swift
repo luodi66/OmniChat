@@ -8,6 +8,7 @@ struct StreamState {
     var reasoning: String = ""
     var toolLog: String = ""
     var status: String = ""
+    var notice: String = ""
 }
 
 @MainActor
@@ -143,29 +144,60 @@ final class ChatEngine: ObservableObject {
         streams[convID] = StreamState(messageID: assistant.id)
 
         let client = LLMClientFactory.make(protocol: provider.apiProtocol, baseURL: provider.baseURL, apiKey: provider.apiKey)
+        let allowed = ThinkingCapabilities.levels(provider: provider, model: conversation.model)
+        let level = ThinkingCapabilities.effective(conversation.thinking, budget: conversation.thinkingBudget, allowed: allowed)
+        var effort: String?
+        var budget: Int?
+        if provider.apiProtocol.isAnthropic {
+            if level == .custom {
+                budget = max(1024, conversation.thinkingBudget)
+            } else {
+                budget = level.anthropicBudget
+            }
+        } else {
+            effort = level.openAIEffort
+        }
         let settings = GenerationSettings(
             model: conversation.model,
             systemPrompt: conversation.systemPrompt,
             temperature: conversation.useTemperature ? conversation.temperature : nil,
             maxTokens: max(16, conversation.maxTokens),
-            thinkingLevel: conversation.thinkingLevel,
-            thinkingBudget: conversation.thinkingBudget,
+            effort: effort,
+            thinkingBudget: budget,
             tools: conversation.webSearchEnabled ? [ToolSpec.webSearch] : []
         )
         let initialMessages = buildNeutralMessages(conversation)
 
         let task = Task { [weak self] in
             var neutral = initialMessages
+            var currentSettings = settings
+            var fallbackAttempts = 0
             var errorText: String?
             do {
                 var round = 0
                 while true {
                     try Task.checkCancellation()
                     round += 1
-                    var turnSettings = settings
+                    var turnSettings = currentSettings
                     if round > ChatEngine.maxToolRounds { turnSettings.tools = [] }
-                    let result = try await client.streamTurn(messages: neutral, settings: turnSettings) { event in
-                        self?.apply(event, to: convID)
+                    var result = TurnResult()
+                    while true {
+                        do {
+                            result = try await client.streamTurn(messages: neutral, settings: turnSettings) { event in
+                                self?.apply(event, to: convID)
+                            }
+                            break
+                        } catch {
+                            guard fallbackAttempts < 2,
+                                  let notice = ChatEngine.adjustAfterError(error, settings: &turnSettings) else {
+                                throw error
+                            }
+                            fallbackAttempts += 1
+                            currentSettings.effort = turnSettings.effort
+                            currentSettings.thinkingBudget = turnSettings.thinkingBudget
+                            currentSettings.maxTokens = turnSettings.maxTokens
+                            self?.addNotice(notice, to: convID)
+                        }
                     }
                     if result.toolCalls.isEmpty || turnSettings.tools.isEmpty {
                         break
@@ -204,6 +236,60 @@ final class ChatEngine: ObservableObject {
             state.reasoning += r
         }
         streams[convID] = state
+    }
+
+    private func addNotice(_ notice: String, to convID: UUID) {
+        guard var state = streams[convID] else { return }
+        state.notice = state.notice.isEmpty ? notice : state.notice + "\n" + notice
+        streams[convID] = state
+    }
+
+    /// Adjusts settings after a recoverable API error. Returns a user-facing notice, or nil if not recoverable.
+    static func adjustAfterError(_ error: Error, settings: inout GenerationSettings) -> String? {
+        var message = ""
+        var status = 0
+        if let e = error as? LLMError {
+            switch e {
+            case .http(let code, let body):
+                status = code
+                message = body
+            case .api(let msg):
+                message = msg
+            default:
+                return nil
+            }
+        } else {
+            return nil
+        }
+        if status != 0 && status != 400 && status != 422 { return nil }
+        let lower = message.lowercased()
+
+        // OpenAI: "xhigh" not accepted -> retry with "high".
+        if settings.effort == "xhigh",
+           lower.contains("xhigh") || lower.contains("effort") || lower.contains("reasoning") {
+            settings.effort = "high"
+            return String(localized: "当前模型不支持 xhigh,已自动降为 high 重试。")
+        }
+
+        // Anthropic: max_tokens above the model's output limit -> clamp budget and max_tokens.
+        if let budget = settings.thinkingBudget, lower.contains("max_tokens") {
+            if let limit = parseTokenLimit(message), limit > 2048 {
+                settings.maxTokens = limit
+                settings.thinkingBudget = min(budget, limit - 2048)
+                return String(localized: "思考预算超过模型输出上限,已自动调整为 \(limit - 2048) 并重试。")
+            }
+        }
+        return nil
+    }
+
+    /// Extracts N from messages like "max_tokens: 68096 > 64000, which is the maximum allowed".
+    static func parseTokenLimit(_ message: String) -> Int? {
+        guard let re = try? NSRegularExpression(pattern: ">\\s*([0-9]+)") else { return nil }
+        let ns = message as NSString
+        guard let m = re.firstMatch(in: message, range: NSRange(location: 0, length: ns.length)), m.numberOfRanges >= 2 else {
+            return nil
+        }
+        return Int(ns.substring(with: m.range(at: 1)))
     }
 
     private func runTool(_ call: ToolCall, convID: UUID) async -> String {
@@ -252,6 +338,7 @@ final class ChatEngine: ObservableObject {
         message.content = text
         message.reasoning = state?.reasoning ?? ""
         message.toolLog = state?.toolLog ?? ""
+        message.notice = state?.notice ?? ""
         message.conversation?.updatedAt = Date()
         try? context.save()
     }

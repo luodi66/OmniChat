@@ -80,8 +80,8 @@ struct AnthropicClient: LLMClient {
         ]
         if !settings.systemPrompt.isEmpty { body["system"] = settings.systemPrompt }
         var maxTokens = settings.maxTokens
-        if settings.thinkingLevel > 0 {
-            let budget = max(1024, settings.thinkingBudget)
+        if let requested = settings.thinkingBudget {
+            let budget = max(1024, requested)
             if maxTokens <= budget { maxTokens = budget + 4096 }
             body["thinking"] = ["type": "enabled", "budget_tokens": budget]
         } else if let t = settings.temperature {

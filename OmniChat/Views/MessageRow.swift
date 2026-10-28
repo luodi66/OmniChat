@@ -13,6 +13,7 @@ struct MessageRow: View {
     private var text: String { stream?.text ?? message.content }
     private var reasoning: String { stream?.reasoning ?? message.reasoning }
     private var toolLog: String { stream?.toolLog ?? message.toolLog }
+    private var notice: String { stream?.notice ?? message.notice }
 
     var body: some View {
         if message.isUser {
@@ -72,6 +73,11 @@ struct MessageRow: View {
 
             if !reasoning.isEmpty {
                 ThinkingBlock(text: reasoning, isStreaming: stream != nil && text.isEmpty)
+            }
+            if !notice.isEmpty {
+                Label(notice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
             if !toolLog.isEmpty {
                 ToolLogBlock(text: toolLog)

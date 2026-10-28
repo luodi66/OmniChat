@@ -41,19 +41,11 @@ struct GenerationSettings {
     var systemPrompt: String
     var temperature: Double?
     var maxTokens: Int
-    /// 0 off, 1 low, 2 medium, 3 high
-    var thinkingLevel: Int
-    var thinkingBudget: Int
+    /// OpenAI reasoning_effort value, nil = not sent.
+    var effort: String?
+    /// Anthropic thinking.budget_tokens, nil = thinking disabled.
+    var thinkingBudget: Int?
     var tools: [ToolSpec]
-
-    var effortString: String? {
-        switch thinkingLevel {
-        case 1: return "low"
-        case 2: return "medium"
-        case 3: return "high"
-        default: return nil
-        }
-    }
 }
 
 enum StreamEvent {

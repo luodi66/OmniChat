@@ -9,6 +9,8 @@ struct SettingsView: View {
     @AppStorage(WebSearchService.resultCountKey) private var resultCount: Int = 5
     @AppStorage("defaultSystemPrompt") private var defaultSystemPrompt: String = ""
     @AppStorage("appearance") private var appearance: String = "system"
+    @AppStorage("defaultThinking") private var defaultThinking: String = ThinkingLevel.off.rawValue
+    @AppStorage("defaultThinkingBudget") private var defaultThinkingBudget: Int = 16000
     @State private var tavilyKey: String = WebSearchService.tavilyKey
     @State private var editingProvider: ProviderConfig?
     @State private var addingProvider = false
@@ -77,6 +79,19 @@ struct SettingsView: View {
                         TextEditor(text: $defaultSystemPrompt)
                             .frame(minHeight: 80)
                     }
+                    Picker(selection: $defaultThinking) {
+                        ForEach(ThinkingLevel.ordered) { level in
+                            Text(level.title).tag(level.rawValue)
+                        }
+                        Text(ThinkingLevel.custom.title).tag(ThinkingLevel.custom.rawValue)
+                    } label: {
+                        Label("默认思考程度", systemImage: "brain.head.profile")
+                    }
+                    if defaultThinking == ThinkingLevel.custom.rawValue {
+                        Stepper(value: $defaultThinkingBudget, in: 1024...128000, step: 1024) {
+                            Text(verbatim: "budget_tokens: \(defaultThinkingBudget)")
+                        }
+                    }
                     Picker("外观", selection: $appearance) {
                         Text("跟随系统").tag("system")
                         Text("浅色").tag("light")
@@ -122,6 +137,7 @@ struct ProviderEditView: View {
     @State private var baseURL = ""
     @State private var apiKey = ""
     @State private var models: [String] = []
+    @State private var levelOverrides: [String: [String]] = [:]
     @State private var newModel = ""
     @State private var fetching = false
     @State private var message: String?
@@ -154,7 +170,17 @@ struct ProviderEditView: View {
 
                 Section {
                     ForEach(models, id: \.self) { m in
-                        Text(m)
+                        NavigationLink {
+                            ModelCapabilityView(model: m, apiProtocol: apiProtocol, overrides: $levelOverrides)
+                        } label: {
+                            HStack {
+                                Text(m)
+                                Spacer()
+                                Text(levelSummary(for: m))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     .onDelete { models.remove(atOffsets: $0) }
                     HStack {
@@ -228,9 +254,23 @@ struct ProviderEditView: View {
             baseURL = p.baseURL
             apiKey = p.apiKey
             models = p.models
+            levelOverrides = p.levelOverrides
         } else {
             baseURL = apiProtocol.defaultBaseURL
         }
+    }
+
+    private func levelSummary(for model: String) -> String {
+        let levels: [ThinkingLevel]
+        if let o = levelOverrides[model] {
+            levels = o.compactMap { ThinkingLevel(rawValue: $0) }.sorted { $0.rank < $1.rank }
+        } else {
+            levels = ThinkingCapabilities.autoLevels(protocol: apiProtocol, model: model)
+        }
+        let names = levels.filter { $0 != .off }.map { $0.title }
+        let prefix = levelOverrides[model] == nil ? String(localized: "自动") : String(localized: "自定义")
+        if names.isEmpty { return prefix + " · " + ThinkingLevel.off.title }
+        return prefix + " · " + names.joined(separator: "/")
     }
 
     private func addModel() {
@@ -268,6 +308,7 @@ struct ProviderEditView: View {
         target.apiProtocol = apiProtocol
         target.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         target.models = models
+        target.levelOverrides = levelOverrides.filter { models.contains($0.key) }
         target.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         try? context.save()
         dismiss()

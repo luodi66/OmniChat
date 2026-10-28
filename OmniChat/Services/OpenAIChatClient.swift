@@ -75,7 +75,7 @@ struct OpenAIChatClient: LLMClient {
             "messages": wireMessages(messages, system: settings.systemPrompt),
             "stream": true
         ]
-        if let effort = settings.effortString {
+        if let effort = settings.effort {
             body["reasoning_effort"] = effort
             // Reasoning models expect max_completion_tokens.
             body["max_completion_tokens"] = settings.maxTokens

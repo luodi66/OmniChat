@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 struct ComposerView: View {
     @Bindable var conversation: Conversation
-    let isAnthropic: Bool
+    let provider: ProviderConfig?
     @EnvironmentObject private var engine: ChatEngine
     @Environment(\.modelContext) private var context
 
@@ -29,7 +29,7 @@ struct ComposerView: View {
                     attachments.removeAll { $0.id == att.id }
                 }
             }
-            HStack(alignment: .bottom, spacing: 6) {
+            HStack(spacing: 8) {
                 Menu {
                     Button {
                         showPhotoPicker = true
@@ -42,25 +42,39 @@ struct ComposerView: View {
                         Label("文件 (文本 / PDF / 图片)", systemImage: "doc")
                     }
                 } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title2)
-                        .frame(width: 32, height: 32)
+                    Image(systemName: "paperclip")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(Color(.tertiarySystemFill)))
                 }
                 .accessibilityLabel(Text("添加附件"))
 
                 Button {
                     conversation.webSearchEnabled.toggle()
                 } label: {
-                    Image(systemName: "globe")
-                        .font(.title3)
-                        .foregroundStyle(conversation.webSearchEnabled ? Color.accentColor : Color.secondary)
-                        .frame(width: 32, height: 32)
+                    HStack(spacing: 4) {
+                        Image(systemName: "globe")
+                        Text("联网")
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(conversation.webSearchEnabled ? Color.accentColor : Color.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(conversation.webSearchEnabled ? Color.accentColor.opacity(0.14) : Color(.tertiarySystemFill)))
+                    .overlay(Capsule().stroke(conversation.webSearchEnabled ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 1))
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .accessibilityLabel(Text("联网搜索"))
+                .accessibilityValue(Text(conversation.webSearchEnabled ? "On" : "Off"))
 
-                ThinkingMenu(conversation: conversation, isAnthropic: isAnthropic)
+                ThinkingPill(conversation: conversation, provider: provider)
 
+                Spacer(minLength: 0)
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
                 TextField("输入消息…", text: $text, axis: .vertical)
                     .lineLimit(1...8)
                     .textFieldStyle(.plain)
@@ -92,19 +106,6 @@ struct ComposerView: View {
                     .keyboardShortcut(.return, modifiers: .command)
                     .accessibilityLabel(Text("发送"))
                 }
-            }
-            if conversation.webSearchEnabled || conversation.thinkingLevel > 0 {
-                HStack(spacing: 12) {
-                    if conversation.webSearchEnabled {
-                        Label("联网搜索已开启", systemImage: "globe")
-                    }
-                    if conversation.thinkingLevel > 0 {
-                        Label(ThinkingMapping.summary(conversation, isAnthropic: isAnthropic), systemImage: "brain.head.profile")
-                    }
-                    Spacer()
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 12)

@@ -34,6 +34,8 @@ final class ProviderConfig {
     var baseURL: String = ""
     var models: [String] = []
     var createdAt: Date = Date()
+    /// JSON: [modelID: [ThinkingLevel.rawValue]] — user overrides of supported thinking levels.
+    var modelLevelOverridesJSON: String = ""
 
     init(name: String, apiProtocol: APIProtocol, baseURL: String, models: [String] = []) {
         self.id = UUID()
@@ -47,6 +49,20 @@ final class ProviderConfig {
     var apiProtocol: APIProtocol {
         get { APIProtocol(rawValue: protocolRaw) ?? .openAIChat }
         set { protocolRaw = newValue.rawValue }
+    }
+
+    var levelOverrides: [String: [String]] {
+        get {
+            guard let data = modelLevelOverridesJSON.data(using: .utf8), !modelLevelOverridesJSON.isEmpty else { return [:] }
+            return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
+        }
+        set {
+            if newValue.isEmpty {
+                modelLevelOverridesJSON = ""
+            } else if let data = try? JSONEncoder().encode(newValue) {
+                modelLevelOverridesJSON = String(data: data, encoding: .utf8) ?? ""
+            }
+        }
     }
 
     var apiKey: String {
@@ -67,10 +83,12 @@ final class Conversation {
     var useTemperature: Bool = false
     var temperature: Double = 0.7
     var maxTokens: Int = 4096
-    /// 0 = off, 1 = low, 2 = medium, 3 = high
+    /// Legacy (v0.1): 0 = off, 1 = low, 2 = medium, 3 = high. Superseded by thinkingRaw.
     var thinkingLevel: Int = 0
-    /// Anthropic budget_tokens (used when thinkingLevel > 0)
-    var thinkingBudget: Int = 8192
+    /// ThinkingLevel.rawValue; empty means "use legacy thinkingLevel".
+    var thinkingRaw: String = ""
+    /// Anthropic budget_tokens used by the "custom" level.
+    var thinkingBudget: Int = 16000
     var webSearchEnabled: Bool = false
     @Relationship(deleteRule: .cascade, inverse: \ChatMessage.conversation)
     var messages: [ChatMessage] = []
@@ -93,6 +111,16 @@ final class Conversation {
         (messages.map { $0.order }.max() ?? -1) + 1
     }
 
+    var thinking: ThinkingLevel {
+        get {
+            if let level = ThinkingLevel(rawValue: thinkingRaw) { return level }
+            return ThinkingLevel.fromLegacy(thinkingLevel)
+        }
+        set {
+            thinkingRaw = newValue.rawValue
+        }
+    }
+
     var displayTitle: String {
         title.isEmpty ? String(localized: "新对话") : title
     }
@@ -105,6 +133,7 @@ final class ChatMessage {
     var content: String = ""
     var reasoning: String = ""
     var toolLog: String = ""
+    var notice: String = ""
     var modelName: String = ""
     var isError: Bool = false
     var order: Int = 0
