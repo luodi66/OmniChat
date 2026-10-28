@@ -1,0 +1,226 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+    tags-ignore: ['*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: OmniChat
+  SCHEME: OmniChat
+
+jobs:
+  unsigned:
+    name: Unsigned IPA
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (no code signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$APP_NAME.xcodeproj" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee xcodebuild.log | grep -E "error:|warning: .*deprecated|\*\* BUILD" || true
+          test -d "build/Build/Products/Release-iphoneos/$APP_NAME.app" || { tail -n 200 xcodebuild.log; exit 1; }
+
+      - name: Package unsigned IPA
+        run: |
+          rm -rf Payload && mkdir Payload
+          cp -R "build/Build/Products/Release-iphoneos/$APP_NAME.app" Payload/
+          zip -qry "$APP_NAME-unsigned.ipa" Payload
+          ls -lh "$APP_NAME-unsigned.ipa"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-unsigned-ipa
+          path: ${{ env.APP_NAME }}-unsigned.ipa
+
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -E 'MARKETING_VERSION' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          TAG="v${VERSION}-${{ github.run_number }}"
+          gh release create "$TAG" "$APP_NAME-unsigned.ipa" \
+            --target "${{ github.sha }}" \
+            --title "$APP_NAME $TAG" \
+            --notes "自动构建 (commit ${{ github.sha }})。
+
+          - \`$APP_NAME-unsigned.ipa\`: 未签名 IPA,需要用你的 Apple 开发者账号重签名后安装(见 README)。
+          - 如果仓库配置了签名 Secrets,本 Release 还会附带已签名的 \`$APP_NAME-signed.ipa\`。"
+
+  signed:
+    name: Signed IPA (optional)
+    runs-on: macos-15
+    needs: unsigned
+    if: github.event_name != 'pull_request'
+    env:
+      BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+      P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+      BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+      EXPORT_METHOD: ${{ secrets.EXPORT_METHOD }}
+    steps:
+      - name: Check signing secrets
+        id: check
+        run: |
+          if [ -n "$BUILD_CERTIFICATE_BASE64" ] && [ -n "$BUILD_PROVISION_PROFILE_BASE64" ] && [ -n "$TEAM_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets not configured; skipping signed build."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.enabled == 'true'
+
+      - name: Install certificate and profile
+        if: steps.check.outputs.enabled == 'true'
+        id: signing
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/profile.mobileprovision"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/profile.plist")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/profile.plist")
+          APP_ID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$RUNNER_TEMP/profile.plist")
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+
+          if /usr/libexec/PlistBuddy -c "Print :ProvisionsAllDevices" "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
+            DETECTED=enterprise
+          elif /usr/libexec/PlistBuddy -c "Print :ProvisionedDevices" "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
+            if [ "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$RUNNER_TEMP/profile.plist" 2>/dev/null)" = "true" ]; then
+              DETECTED=development
+            else
+              DETECTED=ad-hoc
+            fi
+          else
+            DETECTED=app-store
+          fi
+          METHOD="${EXPORT_METHOD:-$DETECTED}"
+
+          # Bundle id: explicit secret, otherwise derived from the profile's application-identifier.
+          if [ -z "$BUNDLE_ID" ]; then
+            BUNDLE_ID="${APP_ID#*.}"
+            if [ "$BUNDLE_ID" = "*" ] || [ -z "$BUNDLE_ID" ]; then BUNDLE_ID="com.luodi66.omnichat"; fi
+          fi
+
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -oE '[0-9A-F]{40}' | head -1)
+          echo "Profile: $PROFILE_NAME ($PROFILE_UUID), method: $METHOD, bundle: $BUNDLE_ID"
+          {
+            echo "profile_uuid=$PROFILE_UUID"
+            echo "method=$METHOD"
+            echo "bundle_id=$BUNDLE_ID"
+            echo "identity=$IDENTITY"
+            echo "keychain=$KEYCHAIN_PATH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install XcodeGen
+        if: steps.check.outputs.enabled == 'true'
+        run: brew install xcodegen && xcodegen generate
+
+      - name: Archive
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$APP_NAME.xcodeproj" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/$APP_NAME.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="${{ steps.signing.outputs.bundle_id }}" \
+            CODE_SIGN_IDENTITY="${{ steps.signing.outputs.identity }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ steps.signing.outputs.profile_uuid }}" \
+            OTHER_CODE_SIGN_FLAGS="--keychain ${{ steps.signing.outputs.keychain }}" \
+            archive | tee archive.log | grep -E "error:|\*\* ARCHIVE" || true
+          test -d "$RUNNER_TEMP/$APP_NAME.xcarchive" || { tail -n 200 archive.log; exit 1; }
+
+      - name: Export IPA
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>${{ steps.signing.outputs.method }}</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ steps.signing.outputs.bundle_id }}</key><string>${{ steps.signing.outputs.profile_uuid }}</string>
+            </dict>
+            <key>compileBitcode</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/$APP_NAME.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export"
+          cp "$RUNNER_TEMP/export/"*.ipa "$APP_NAME-signed.ipa"
+          ls -lh "$APP_NAME-signed.ipa"
+
+      - name: Upload signed artifact
+        if: steps.check.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-signed-ipa
+          path: ${{ env.APP_NAME }}-signed.ipa
+
+      - name: Attach to Release
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -E 'MARKETING_VERSION' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          TAG="v${VERSION}-${{ github.run_number }}"
+          gh release upload "$TAG" "$APP_NAME-signed.ipa" --clobber
+
+      - name: Clean up keychain
+        if: always() && steps.check.outputs.enabled == 'true'
+        run: |
+          security delete-keychain "${{ steps.signing.outputs.keychain }}" || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/profile.mobileprovision"
